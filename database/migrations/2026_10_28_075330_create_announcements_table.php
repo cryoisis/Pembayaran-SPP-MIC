@@ -8,12 +8,10 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::create('fee_adjustments', function (Blueprint $table) {
+        Schema::create('announcements', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('user_id')->constrained()->restrictOnDelete();
-            $table->foreignId('payment_setting_id')->constrained()->restrictOnDelete();
-            $table->bigInteger('amount');               // signed: + extra, - reduction
-            $table->string('reason');
+            $table->string('title');
+            $table->text('body');
             $table->foreignId('created_by')->nullable()->constrained('users')->nullOnDelete();
             $table->timestamps();
         });
@@ -21,6 +19,6 @@ return new class extends Migration
 
     public function down(): void
     {
-        Schema::dropIfExists('fee_adjustments');
+        Schema::dropIfExists('announcements');
     }
 };

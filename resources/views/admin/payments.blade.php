@@ -2,207 +2,340 @@
 @section('title', 'Pembayaran Siswa')
 
 @section('content')
-<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
-    <div>
-        <h1 class="h4 mb-0">Daftar Siswa &amp; Pencatatan Pembayaran</h1>
-        <small class="text-muted">{{ $period->name }} · batas akhir {{ $period->due_date->translatedFormat('d F Y') }} · standar Rp{{ number_format($period->standard_fee, 0, ',', '.') }}</small>
-    </div>
-    <form method="GET" class="d-flex gap-2">
-        <input type="search" name="q" value="{{ request('q') }}" class="form-control" placeholder="Cari NIS / nama">
-        <button class="btn btn-outline-secondary">Cari</button>
-    </form>
-</div>
+@php
+    $rows = $students->getCollection()->map(fn ($s) => ['student' => $s, 'sum' => $s->paymentSummary($setting)]);
+    $statusCount = $rows->countBy(fn ($r) => $r['sum']['status']);
+    $tabs = ['' => 'Semua', 'Belum lunas' => 'Belum lunas', 'Terlambat' => 'Terlambat', 'Lunas' => 'Lunas'];
+@endphp
 
-<div class="card">
-    <div class="table-responsive">
-        <table class="table table-hover align-middle mb-0">
-            <thead class="table-light">
-                <tr><th>NIS</th><th>Nama Lengkap</th><th>Status</th>
-                    <th class="text-end">Total Kewajiban</th><th class="text-end">Total Dibayar</th><th class="text-end">Sisa</th></tr>
-            </thead>
-            <tbody>
-            @forelse ($students as $student)
-                @php $sum = $student->paymentSummary($period); @endphp
-                <tr class="student-row" data-id="{{ $student->id }}" data-show-url="{{ route('admin.payments.show', $student) }}">
-                    <td>{{ $student->nis }}</td>
-                    <td>{{ $student->name }}</td>
-                    <td>@include('layouts.partials.status-badge', ['status' => $sum['status']])</td>
-                    <td class="text-end">Rp{{ number_format($sum['total'], 0, ',', '.') }}</td>
-                    <td class="text-end">Rp{{ number_format($sum['paid'], 0, ',', '.') }}</td>
-                    <td class="text-end">Rp{{ number_format($sum['remaining'], 0, ',', '.') }}</td>
+<div x-data="paymentDrawer()">
+    <x-page-header title="Pembayaran SPP">
+        <x-slot:sub>
+            @if ($rate)
+                Tarif berlaku TA {{ $rate->academic_year }}: <x-money :value="$rate->amount" /> per bulan.
+            @else
+                <span class="font-semibold text-bad-fg">Belum ada tarif yang berlaku.</span>
+            @endif
+            Tagihan dibuka tanggal {{ $setting->start_day }} dan jatuh tempo tanggal {{ $setting->due_day }} setiap bulan.
+        </x-slot:sub>
+    </x-page-header>
+
+    <section class="mb-6 grid gap-4 sm:grid-cols-3" aria-label="Ringkasan keuangan">
+        @if (isset($metrics))
+            <x-stat label="Pendapatan bulan ini" icon="wallet" tone="ok" :money="$metrics['income_month']" hint="Pembayaran terkonfirmasi" />
+            <x-stat label="Siswa belum lunas" icon="alert" tone="warn" :value="$metrics['unpaid_students']"
+                    :hint="isset($metrics['active_students']) ? 'dari '.$metrics['active_students'].' siswa aktif' : 'seluruh siswa aktif'" />
+            <x-stat label="Transaksi masuk hari ini" icon="receipt" :value="$metrics['trx_today']"
+                    :hint="'Tercatat '.now()->translatedFormat('d F Y')" />
+        @else
+            <x-stat label="Terbayar (daftar ini)" icon="wallet" tone="ok" :money="$rows->sum(fn ($r) => $r['sum']['paid'])" hint="Hanya siswa di halaman ini" />
+            <x-stat label="Belum lunas (daftar ini)" icon="alert" tone="warn" :value="$rows->filter(fn ($r) => $r['sum']['status'] !== 'Lunas')->count()"
+                    :hint="'dari '.$rows->count().' siswa di halaman ini'" />
+            <x-stat label="Sisa kewajiban (daftar ini)" icon="receipt" :money="$rows->sum(fn ($r) => $r['sum']['remaining'])" hint="Hanya siswa di halaman ini" />
+        @endif
+    </section>
+
+    {{-- Search + status filter --}}
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <form method="GET" role="search" class="relative w-full max-w-sm">
+            <x-icon name="search" size="size-4" class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+            <x-input type="search" name="q" :value="request('q')" placeholder="Cari NISN atau nama siswa" autocomplete="off" aria-label="Cari siswa" class="pl-10" />
+        </form>
+
+        <div class="inline-flex rounded-xl border border-line bg-white p-0.5" role="group" aria-label="Saring status">
+            @foreach ($tabs as $value => $label)
+                <button type="button" @click="filter = '{{ $value }}'"
+                        :class="filter === '{{ $value }}' ? 'bg-forest text-white' : 'text-muted hover:text-ink'"
+                        class="rounded-lg px-3 py-1.5 text-xs font-medium transition">
+                    {{ $label }} <span class="opacity-70">{{ $value === '' ? $rows->count() : ($statusCount[$value] ?? 0) }}</span>
+                </button>
+            @endforeach
+        </div>
+    </div>
+
+    <x-card flush>
+        <x-table :head="['NISN', 'Nama lengkap', 'Status', ['Total tagihan', 'right'], ['Total pembayaran', 'right'], ['Sisa kewajiban', 'right'], '']">
+            @forelse ($rows as $r)
+                @php($student = $r['student'])
+                @php($sum = $r['sum'])
+                <tr class="cursor-pointer" x-show="matches('{{ $sum['status'] }}')" @click="open({{ $student->id }})">
+                    <td>{{ $student->nisn }}</td>
+                    <td class="font-medium">{{ $student->name }}</td>
+                    <td><x-badge :status="$sum['status']" /></td>
+                    <td class="text-right"><x-money :value="$sum['total']" /></td>
+                    <td class="text-right"><x-money :value="$sum['paid']" /></td>
+                    <td @class(['text-right', 'font-semibold text-bad-fg' => $sum['remaining'] > 0, 'text-muted' => $sum['remaining'] <= 0])>
+                        <x-money :value="$sum['remaining']" />
+                    </td>
+                    <td class="text-right">
+                        <x-btn size="sm" variant="soft" @click.stop="open({{ $student->id }})">{{ $sum['status'] === 'Lunas' ? 'Lihat' : 'Catat' }}</x-btn>
+                    </td>
                 </tr>
             @empty
-                <tr><td colspan="6" class="text-center text-muted py-4">Tidak ada siswa ditemukan.</td></tr>
+                <x-table.empty>Tidak ada siswa ditemukan. Coba kata kunci lain atau hapus filter.</x-table.empty>
             @endforelse
-            </tbody>
-        </table>
-    </div>
-</div>
-<div class="mt-3">{{ $students->links('pagination::bootstrap-5') }}</div>
 
-{{-- Payment management modal (filled via JSON) --}}
-<div class="modal fade" id="paymentModal" tabindex="-1">
-    <div class="modal-dialog modal-lg modal-dialog-scrollable">
-        <div class="modal-content">
-            <div class="modal-header">
-                <div>
-                    <h5 class="modal-title" id="mName"></h5>
-                    <small class="text-muted" id="mNis"></small>
+            @if ($rows->isNotEmpty())
+                <tr x-show="filter && ! visibleCount" x-cloak>
+                    <td colspan="7" class="!py-10 text-center text-muted">Tidak ada siswa dengan status ini di halaman ini.</td>
+                </tr>
+            @endif
+        </x-table>
+    </x-card>
+
+    <div class="mt-4">{{ $students->withQueryString()->links() }}</div>
+    <p class="mt-4 text-xs text-muted">Klik baris siswa atau tombol Catat / Lihat untuk membuka detail dan mencatat pembayaran.</p>
+
+    {{-- Slide-over drawer --}}
+    <div x-show="isOpen" x-cloak class="fixed inset-0 z-50" role="dialog" aria-modal="true" @keydown.escape.window="close()">
+        <div class="absolute inset-0 bg-ink/40 backdrop-blur-sm" x-show="isOpen" x-transition.opacity @click="close()"></div>
+
+        <aside class="absolute inset-y-0 right-0 flex w-full max-w-2xl flex-col bg-white shadow-2xl"
+               x-show="isOpen"
+               x-transition:enter="transition duration-300 ease-out" x-transition:enter-start="translate-x-full" x-transition:enter-end="translate-x-0"
+               x-transition:leave="transition duration-200 ease-in" x-transition:leave-start="translate-x-0" x-transition:leave-end="translate-x-full">
+
+            <header class="flex items-center justify-between gap-4 border-b border-line bg-forest-soft/50 px-6 py-4">
+                <div class="min-w-0">
+                    <h2 class="truncate text-lg font-semibold tracking-tight" x-text="data?.student?.name || 'Detail Siswa'"></h2>
+                    <div class="mt-0.5 text-xs text-muted">
+                        NISN: <strong x-text="data?.student?.nisn || '-'"></strong>
+                        <template x-if="data?.rate">
+                            <span>&middot; TA <span x-text="data.rate.academic_year"></span> (<span x-text="rp(data.rate.amount) + '/bln'"></span>)</span>
+                        </template>
+                    </div>
                 </div>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <div class="row g-2 mb-3 text-center">
-                    <div class="col-6 col-md-3"><div class="border rounded p-2"><div class="small text-muted">Standar</div><div id="mStandard" class="fw-semibold"></div></div></div>
-                    <div class="col-6 col-md-3"><div class="border rounded p-2"><div class="small text-muted">Total kewajiban</div><div id="mTotal" class="fw-semibold"></div></div></div>
-                    <div class="col-6 col-md-3"><div class="border rounded p-2"><div class="small text-muted">Total dibayar</div><div id="mPaid" class="fw-semibold text-success"></div></div></div>
-                    <div class="col-6 col-md-3"><div class="border rounded p-2"><div class="small text-muted">Sisa</div><div id="mRemaining" class="fw-semibold text-danger"></div></div></div>
+                <button type="button" @click="close()" class="rounded-xl p-2 text-muted hover:bg-forest-soft hover:text-ink" aria-label="Tutup">
+                    <x-icon name="x" />
+                </button>
+            </header>
+
+            <div class="flex-1 space-y-6 overflow-y-auto p-6">
+                {{-- Loading --}}
+                <div x-show="loading" class="py-16 text-center text-muted">
+                    <svg class="mx-auto mb-3 size-8 animate-spin text-forest" viewBox="0 0 24 24" fill="none">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/>
+                    </svg>
+                    <p class="text-sm font-medium">Memuat data pembayaran...</p>
                 </div>
-                <div class="mb-3">Status: <span id="mStatus" class="badge"></span></div>
 
-                <h6>Penyesuaian Biaya</h6>
-                <ul class="list-group mb-3" id="mAdjustments"></ul>
+                {{-- Error --}}
+                <div x-show="! loading && error" class="tone-bad rounded-xl p-4 text-sm">
+                    <div class="font-medium">Gagal Memuat Data</div>
+                    <p class="mt-1 text-xs" x-text="error"></p>
+                    <x-btn size="sm" variant="danger" class="mt-3" @click="open(studentId)">Coba Lagi</x-btn>
+                </div>
 
-                {{-- Add adjustment --}}
-                <form method="POST" id="adjForm" class="border rounded p-3 mb-4 bg-light">
-                    @csrf
-                    <input type="hidden" name="_student" class="studentField">
-                    <div class="fw-semibold mb-2">Tambah penyesuaian</div>
-                    <div class="row g-2">
-                        <div class="col-md-3">
-                            <select name="adjustment_type" class="form-select" required>
-                                <option value="add">Biaya tambahan (+)</option>
-                                <option value="reduce">Pengurangan (−)</option>
-                            </select>
-                        </div>
-                        <div class="col-md-3"><input type="number" min="1" name="adjustment_amount" class="form-control" placeholder="Nominal (Rp)" required></div>
-                        <div class="col-md-6"><input type="text" name="reason" maxlength="255" class="form-control" placeholder="Alasan perubahan (wajib)" required></div>
-                    </div>
-                    <div class="mt-2 text-end">
-                        <button type="reset" class="btn btn-sm btn-secondary">Batal</button>
-                        <button type="submit" class="btn btn-sm btn-primary">Simpan</button>
-                    </div>
-                </form>
-
-                {{-- Record payment (2 steps: fill -> summary -> confirm) --}}
-                <form method="POST" id="payForm" class="border rounded p-3 mb-4 bg-light">
-                    @csrf
-                    <input type="hidden" name="_student" class="studentField">
-                    <div class="fw-semibold mb-2">Catat pembayaran (penuh / cicilan)</div>
-                    <div class="row g-2">
-                        <div class="col-md-4"><input type="number" min="1" name="amount" id="payAmount" class="form-control" placeholder="Nominal (Rp)" required></div>
-                        <div class="col-md-4"><input type="date" name="paid_at" id="payDate" class="form-control" max="{{ now()->toDateString() }}" required></div>
-                        <div class="col-md-4"><input type="text" name="note" id="payNote" maxlength="255" class="form-control" placeholder="Keterangan (opsional)"></div>
-                    </div>
-                    <div id="payActions" class="mt-2 text-end">
-                        <button type="reset" class="btn btn-sm btn-secondary">Batal</button>
-                        <button type="button" class="btn btn-sm btn-primary" id="payPreview">Lanjut</button>
-                    </div>
-                    <div id="confirmBox" class="alert alert-warning mt-3 mb-0 d-none">
-                        <div id="confirmText"></div>
-                        <div class="mt-2 text-end">
-                            <button type="button" class="btn btn-sm btn-secondary" id="confirmBack">Kembali</button>
-                            <button type="submit" class="btn btn-sm btn-success">Konfirmasi &amp; Simpan</button>
+                {{-- Loaded --}}
+                <div x-show="! loading && data" class="space-y-6">
+                    <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                        <template x-for="tile in tiles" :key="tile.label">
+                            <div class="rounded-xl border border-line p-3">
+                                <div class="text-[11px] font-semibold uppercase tracking-wide text-muted" x-text="tile.label"></div>
+                                <div class="mt-1 text-base font-semibold" :class="tile.class" x-text="rp(tile.value)"></div>
+                            </div>
+                        </template>
+                        <div class="rounded-xl border border-line p-3">
+                            <div class="text-[11px] font-semibold uppercase tracking-wide text-muted">Status</div>
+                            <x-badge class="mt-1" x-bind:class="tone(data?.summary?.status)"><span x-text="data?.summary?.status"></span></x-badge>
                         </div>
                     </div>
-                </form>
 
-                <h6>Riwayat Transaksi Terkonfirmasi</h6>
-                <ul class="list-group" id="mTransactions"></ul>
+                    {{-- Record payment --}}
+                    <section class="rounded-2xl border border-line bg-forest-soft/50 p-5">
+                        <h3 class="mb-3 flex items-center justify-between text-sm font-semibold">
+                            Pencatatan Pembayaran Baru
+                            <span class="text-xs font-normal text-muted" x-show="payable.length"><span x-text="payable.length"></span> periode dapat dibayar</span>
+                        </h3>
+
+                        <template x-if="! payable.length">
+                            <div class="tone-ok flex items-start gap-3 rounded-xl p-4 text-sm">
+                                <x-icon name="check" class="mt-0.5" />
+                                <div>
+                                    <strong class="font-semibold">Semua tagihan telah terselesaikan</strong>
+                                    <p class="mt-0.5 text-xs">Tidak ada tagihan tertunggak atau tagihan yang menunggu pembayaran saat ini.</p>
+                                </div>
+                            </div>
+                        </template>
+
+                        <template x-if="payable.length">
+                            <form method="POST" :action="storeUrl" class="space-y-4">
+                                @csrf
+                                <input type="hidden" name="_student" :value="data?.student?.id">
+
+                                <div>
+                                    <div class="mb-2 flex items-center justify-between text-xs">
+                                        <span class="font-semibold uppercase tracking-wide text-muted">Pilih Periode Tagihan <span class="text-bad-fg">*</span></span>
+                                        <span class="space-x-2">
+                                            <button type="button" @click="selected = payable.map(b => b.id)" class="font-medium text-forest hover:underline">Pilih Semua</button>
+                                            <span class="text-line">&bull;</span>
+                                            <button type="button" @click="selected = []" class="text-muted hover:underline">Hapus</button>
+                                        </span>
+                                    </div>
+                                    <div class="grid max-h-52 gap-2 overflow-y-auto rounded-xl border border-line bg-white p-1.5 sm:grid-cols-2">
+                                        <template x-for="bill in payable" :key="bill.id">
+                                            <label class="flex cursor-pointer select-none items-center gap-2.5 rounded-lg border p-2.5 text-xs transition"
+                                                   :class="selected.includes(bill.id) ? 'border-forest bg-forest-tint' : 'border-line hover:border-forest/40'">
+                                                <input type="checkbox" name="bill_ids[]" :value="bill.id" x-model.number="selected" class="size-4 rounded accent-forest">
+                                                <div class="min-w-0 flex-1">
+                                                    <div class="truncate font-medium" x-text="bill.label"></div>
+                                                    <div class="text-[11px] text-muted" x-text="'Jatuh tempo: ' + bill.due_date"></div>
+                                                </div>
+                                                <div class="font-semibold" x-text="rp(bill.amount)"></div>
+                                            </label>
+                                        </template>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <div class="mb-1.5 text-sm font-medium text-muted">Nominal Pembayaran</div>
+                                    <div class="flex items-center justify-between rounded-xl border border-line bg-white px-4 py-2.5">
+                                        <span class="text-xs text-muted">Total (<span x-text="selected.length"></span> periode dipilih):</span>
+                                        <span class="text-lg font-bold text-forest" x-text="rp(total)"></span>
+                                    </div>
+                                    <input type="hidden" name="amount" :value="total">
+                                    <p class="mt-1 text-xs text-muted">Nominal pembayaran dihitung otomatis sesuai tagihan periode yang dipilih.</p>
+                                </div>
+
+                                <div class="grid gap-3 sm:grid-cols-2">
+                                    <x-input label="Tanggal Transaksi" name="paid_at" type="date" x-model="paidAt" x-bind:max="today" required />
+                                    <x-select label="Metode Pembayaran" name="method" x-model="method" required>
+                                        <option value="tunai">Tunai</option>
+                                        <option value="transfer">Transfer</option>
+                                    </x-select>
+                                </div>
+
+                                <x-input label="Keterangan (Opsional)" name="note" x-model="note" placeholder="Catatan transaksi, misal nomor resi transfer atau titip wali..." />
+
+                                <div class="flex flex-wrap justify-end gap-2 border-t border-line pt-4">
+                                    <x-btn type="submit" variant="secondary" name="action" value="save" x-bind:disabled="! selected.length">Simpan (Menunggu Konfirmasi)</x-btn>
+                                    <x-btn type="submit" name="action" value="confirm" x-bind:disabled="! selected.length">Konfirmasi Langsung</x-btn>
+                                </div>
+                            </form>
+                        </template>
+                    </section>
+
+                    {{-- Bills --}}
+                    <section>
+                        <h3 class="mb-3 text-sm font-semibold">Rincian Tagihan SPP (<span x-text="bills.length"></span>)</h3>
+                        <div class="overflow-hidden rounded-xl border border-line">
+                            <x-table compact :head="['Bulan', ['Nominal', 'right'], 'Jatuh Tempo', 'Status']">
+                                <template x-for="bill in bills" :key="bill.id">
+                                    <tr>
+                                        <td class="font-medium" x-text="bill.label"></td>
+                                        <td class="text-right" x-text="rp(bill.amount)"></td>
+                                        <td class="text-muted" x-text="bill.due_date"></td>
+                                        <td>
+                                            <x-badge x-bind:class="tone(bill.status, bill.pending)">
+                                                <span x-text="bill.pending ? 'Menunggu konfirmasi' : bill.status"></span>
+                                            </x-badge>
+                                        </td>
+                                    </tr>
+                                </template>
+                            </x-table>
+                        </div>
+                    </section>
+
+                    {{-- Transactions --}}
+                    <section>
+                        <h3 class="mb-3 text-sm font-semibold">Riwayat Transaksi Pembayaran (<span x-text="transactions.length"></span>)</h3>
+
+                        <template x-if="! transactions.length">
+                            <div class="rounded-xl border border-line p-6 text-center text-xs text-muted">Belum ada transaksi pembayaran untuk siswa ini.</div>
+                        </template>
+
+                        <template x-if="transactions.length">
+                            <div class="overflow-hidden rounded-xl border border-line">
+                                <x-table compact :head="['Tanggal', 'Periode', 'Metode', ['Nominal', 'right'], 'Status', '']">
+                                    <template x-for="trx in transactions" :key="trx.url">
+                                        <tr>
+                                            <td class="font-medium" x-text="trx.date"></td>
+                                            <td class="text-muted" x-text="trx.periods"></td>
+                                            <td class="capitalize" x-text="trx.method"></td>
+                                            <td class="text-right font-semibold" x-text="rp(trx.amount)"></td>
+                                            <td>
+                                                <x-badge x-bind:class="trxTone(trx.status_color)"><span x-text="trx.status_label"></span></x-badge>
+                                            </td>
+                                            <td class="text-right"><a :href="trx.url" class="font-medium text-forest hover:underline">Rincian</a></td>
+                                        </tr>
+                                    </template>
+                                </x-table>
+                            </div>
+                        </template>
+                    </section>
+                </div>
             </div>
-        </div>
+        </aside>
     </div>
 </div>
 @endsection
 
 @push('scripts')
 <script>
-    const fmt = n => 'Rp' + Number(n).toLocaleString('id-ID');
-    const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    const statusColors = {
-        'Sudah bayar': 'success', 'Mencicil': 'info', 'Belum bayar': 'secondary',
-        'Terlambat bayar': 'danger', 'Terlambat mencicil': 'warning'
+function paymentDrawer() {
+    const base  = @js(url('admin/payments'));
+    const today = @js(now()->toDateString());
+    const tones    = { 'Lunas': 'ok', 'Belum lunas': 'warn', 'Terlambat': 'bad' };
+    const trxTones = { success: 'ok', warning: 'warn', danger: 'bad', info: 'info' };
+
+    return {
+        // list filter
+        filter: '',
+        statuses: @js($rows->pluck('sum.status')->values()),
+
+        // drawer
+        isOpen: false, loading: false, error: null, data: null, studentId: null,
+
+        // new-payment form
+        selected: [], paidAt: today, today, method: 'tunai', note: '',
+
+        get bills()        { return this.data?.bills ?? []; },
+        get transactions() { return this.data?.transactions ?? []; },
+        get payable()      { return this.bills.filter(b => b.selectable); },
+        get storeUrl()     { return this.data?.student?.id ? `${base}/${this.data.student.id}/transactions` : ''; },
+        get visibleCount() { return this.statuses.filter(s => this.matches(s)).length; },
+        get total() {
+            const ids = this.selected.map(Number);
+            return this.bills.filter(b => ids.includes(Number(b.id))).reduce((sum, b) => sum + Number(b.amount || 0), 0);
+        },
+        get tiles() {
+            const s = this.data?.summary ?? {};
+            return [
+                { label: 'Total Kewajiban', value: s.total },
+                { label: 'Total Terbayar',  value: s.paid, class: 'text-ok-fg' },
+                { label: 'Sisa Tagihan',    value: s.remaining, class: (s.remaining || 0) > 0 ? 'text-bad-fg' : 'text-muted' },
+            ];
+        },
+
+        matches(status) { return ! this.filter || status === this.filter; },
+        rp(value)       { return 'Rp' + Number(value || 0).toLocaleString('id-ID'); },
+        tone(status, pending = false) { return 'tone-' + (pending ? 'warn' : tones[status] ?? 'neutral'); },
+        trxTone(color)  { return 'tone-' + (trxTones[color] ?? 'neutral'); },
+
+        async open(id) {
+            Object.assign(this, { isOpen: true, loading: true, error: null, studentId: id });
+            try {
+                const res = await fetch(`${base}/${id}`, { headers: { Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' } });
+                if (! res.ok) throw new Error('Gagal mengambil data siswa.');
+                this.data = await res.json();
+                Object.assign(this, { selected: this.payable.slice(0, 1).map(b => b.id), paidAt: today, method: 'tunai', note: '' });
+            } catch (err) {
+                this.error = err.message || 'Terjadi kesalahan saat memuat data.';
+            } finally {
+                this.loading = false;
+            }
+        },
+        close() { this.isOpen = false; },
+
+        init() {
+            @if ($errors->any() && old('_student'))
+                this.open({{ (int) old('_student') }});
+            @elseif (request('student'))
+                this.open({{ (int) request('student') }});
+            @endif
+        },
     };
-    const adjUrl = @json(route('admin.payments.adjustments.store', ['student' => '__ID__']));
-    const trxUrl = @json(route('admin.payments.transactions.store', ['student' => '__ID__']));
-    const today  = @json(now()->toDateString());
-
-    const modalEl = document.getElementById('paymentModal');
-    const modal = new bootstrap.Modal(modalEl);
-    const payForm = document.getElementById('payForm');
-    const confirmBox = document.getElementById('confirmBox');
-    const payActions = document.getElementById('payActions');
-    let current = null;
-
-    function resetConfirm() {
-        confirmBox.classList.add('d-none');
-        payActions.classList.remove('d-none');
-    }
-
-    async function openStudent(row) {
-        const res = await fetch(row.dataset.showUrl, {headers: {'Accept': 'application/json'}});
-        if (!res.ok) { alert('Gagal memuat data siswa.'); return; }
-        const d = current = await res.json();
-
-        document.getElementById('mName').textContent = d.student.name;
-        document.getElementById('mNis').textContent = 'NIS ' + d.student.nis + ' · ' + d.period.name + ' (batas ' + d.period.due_date + ')';
-        document.getElementById('mStandard').textContent = fmt(d.summary.standard);
-        document.getElementById('mTotal').textContent = fmt(d.summary.total);
-        document.getElementById('mPaid').textContent = fmt(d.summary.paid);
-        document.getElementById('mRemaining').textContent = fmt(d.summary.remaining);
-
-        const badge = document.getElementById('mStatus');
-        badge.textContent = d.summary.status;
-        badge.className = 'badge text-bg-' + (statusColors[d.summary.status] || 'secondary');
-
-        document.getElementById('mAdjustments').innerHTML = d.adjustments.length
-            ? d.adjustments.map(a => `<li class="list-group-item d-flex justify-content-between">
-                <span>${esc(a.reason)} <small class="text-muted">(${esc(a.date)})</small></span>
-                <strong class="${a.amount < 0 ? 'text-success' : 'text-danger'}">${a.amount < 0 ? '−' : '+'}${fmt(Math.abs(a.amount))}</strong></li>`).join('')
-            : '<li class="list-group-item text-muted">Belum ada penyesuaian.</li>';
-
-        document.getElementById('mTransactions').innerHTML = d.transactions.length
-            ? d.transactions.map(t => `<li class="list-group-item d-flex justify-content-between">
-                <span>${esc(t.date)}${t.note ? ' — ' + esc(t.note) : ''}</span><strong>${fmt(t.amount)}</strong></li>`).join('')
-            : '<li class="list-group-item text-muted">Belum ada transaksi.</li>';
-
-        document.querySelectorAll('.studentField').forEach(i => i.value = d.student.id);
-        document.getElementById('adjForm').action = adjUrl.replace('__ID__', d.student.id);
-        payForm.action = trxUrl.replace('__ID__', d.student.id);
-        document.getElementById('payDate').value = today;
-        resetConfirm();
-        modal.show();
-    }
-
-    document.querySelectorAll('.student-row').forEach(row => row.addEventListener('click', () => openStudent(row)));
-
-    // Step 1: show summary of what will be recorded
-    document.getElementById('payPreview').addEventListener('click', () => {
-        if (!payForm.reportValidity()) return;
-        const amount = Number(document.getElementById('payAmount').value);
-        const date = document.getElementById('payDate').value;
-        const note = document.getElementById('payNote').value;
-        const remainingAfter = current.summary.remaining - amount;
-
-        if (remainingAfter < 0) { alert('Nominal melebihi sisa kewajiban (' + fmt(current.summary.remaining) + ').'); return; }
-
-        document.getElementById('confirmText').innerHTML =
-            `Anda akan mencatat pembayaran <strong>${fmt(amount)}</strong> untuk <strong>${esc(current.student.name)}</strong>
-             pada tanggal <strong>${esc(date)}</strong>${note ? ' (' + esc(note) + ')' : ''}.<br>
-             Sisa kewajiban setelah pencatatan: <strong>${fmt(remainingAfter)}</strong>
-             ${remainingAfter === 0 ? ' — <span class="text-success">LUNAS</span>' : ''}`;
-        confirmBox.classList.remove('d-none');
-        payActions.classList.add('d-none');
-    });
-    document.getElementById('confirmBack').addEventListener('click', resetConfirm);
-    payForm.addEventListener('reset', () => { resetConfirm(); setTimeout(() => document.getElementById('payDate').value = today); });
-
-    // Re-open the student's modal after a validation error
-    @if ($errors->any() && old('_student'))
-        (() => {
-            const row = document.querySelector('.student-row[data-id="{{ old('_student') }}"]');
-            if (row) openStudent(row);
-        })();
-    @endif
+}
 </script>
 @endpush

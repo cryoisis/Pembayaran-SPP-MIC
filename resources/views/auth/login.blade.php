@@ -2,35 +2,25 @@
 @section('title', 'Masuk')
 
 @section('content')
-<div class="row justify-content-center mt-5">
-    <div class="col-md-5 col-lg-4">
-        <div class="card shadow-sm">
-            <div class="card-body p-4">
-                <h1 class="h4 text-center mb-1">Pencatatan Pembayaran Siswa</h1>
-                <p class="text-center text-muted mb-4">Silakan masuk</p>
-
-                @if (session('success'))
-                    <div class="alert alert-success py-2">{{ session('success') }}</div>
-                @endif
-
-                <form method="POST" action="{{ route('login.attempt') }}" novalidate>
-                    @csrf
-                    <div class="mb-3">
-                        <label for="nis" class="form-label">NIS / Akun</label>
-                        <input type="text" id="nis" name="nis" value="{{ old('nis') }}"
-                               class="form-control @error('nis') is-invalid @enderror" autofocus required>
-                        @error('nis') <div class="invalid-feedback">{{ $message }}</div> @enderror
-                    </div>
-                    <div class="mb-4">
-                        <label for="password" class="form-label">Password</label>
-                        <input type="password" id="password" name="password"
-                               class="form-control @error('password') is-invalid @enderror" required>
-                        @error('password') <div class="invalid-feedback">{{ $message }}</div> @enderror
-                    </div>
-                    <button type="submit" class="btn btn-primary w-100">Masuk</button>
-                </form>
-            </div>
+<div class="grid min-h-screen place-items-center px-4 py-8">
+    <div class="w-full max-w-sm">
+        <div class="mb-6 text-center">
+            <span class="mb-3 inline-grid size-12 place-items-center rounded-xl bg-forest text-lg font-bold text-white">MIC</span>
+            <h1 class="text-lg font-semibold">Pembayaran SPP Siswa</h1>
         </div>
+
+        @if (session('success'))
+            <x-alert class="mb-4">{{ session('success') }}</x-alert>
+        @endif
+
+        <x-card class="shadow-lg shadow-forest/5">
+            <form method="POST" action="{{ route('login.attempt') }}" class="space-y-4" novalidate>
+                @csrf
+                <x-input label="NISN" name="nisn" autofocus required />
+                <x-input label="Kata sandi" name="password" type="password" required />
+                <x-btn type="submit" class="w-full">Masuk</x-btn>
+            </form>
+        </x-card>
     </div>
 </div>
 @endsection

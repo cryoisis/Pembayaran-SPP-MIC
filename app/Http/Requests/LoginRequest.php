@@ -14,13 +14,13 @@ class LoginRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'nis'      => ['required', 'string', 'max:30'],
+            'nisn' => ['required', 'string', 'max:30'],
             'password' => ['required', 'string'],
         ];
     }
 
     public function attributes(): array
     {
-        return ['nis' => 'NIS / akun', 'password' => 'password'];
+        return ['nisn' => 'NISN / akun', 'password' => 'kata sandi'];
     }
 }

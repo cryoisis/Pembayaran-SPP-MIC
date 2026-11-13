@@ -3,70 +3,72 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Models\Announcement;
+use App\Models\FeeRate;
 use App\Models\PaymentSetting;
 use App\Models\User;
+use App\Services\BillingService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 
 class DashboardController extends Controller
 {
-    public function index()
+    public function index(BillingService $billing)
     {
-        $period   = PaymentSetting::current();
-        $students = User::students()->active()->withPaymentTotals($period)->get();
+        $billing->syncBills();
 
-        $statusCounts = collect([
-            PaymentSetting::STATUS_PAID, PaymentSetting::STATUS_INSTALLMENT,
-            PaymentSetting::STATUS_UNPAID, PaymentSetting::STATUS_LATE,
-            PaymentSetting::STATUS_LATE_INSTALLMENT,
-        ])->mapWithKeys(fn ($s) => [$s => 0])->all();
+        $setting = PaymentSetting::current();
+        $students = User::students()->active()->with('bills.allocations.transaction')->orderBy('nisn')->get();
 
-        $totals = ['obligation' => 0, 'paid' => 0, 'remaining' => 0];
+        $statusCounts = [
+            PaymentSetting::STATUS_PAID => 0,
+            PaymentSetting::STATUS_UNPAID => 0,
+            PaymentSetting::STATUS_LATE => 0,
+        ];
+        $totals = ['total' => 0, 'paid' => 0, 'remaining' => 0];
+        $arrears = collect();
 
         foreach ($students as $student) {
-            $sum = $student->paymentSummary($period);
+            $sum = $student->paymentSummary($setting);
             $statusCounts[$sum['status']]++;
-            $totals['obligation'] += $sum['total'];
-            $totals['paid']       += $sum['paid'];
-            $totals['remaining']  += $sum['remaining'];
+            $totals['total'] += $sum['total'];
+            $totals['paid'] += $sum['paid'];
+            $totals['remaining'] += $sum['remaining'];
+
+            if ($sum['late']->isNotEmpty()) {
+                $arrears->push([
+                    'student' => $student,
+                    'periods' => $sum['late']->pluck('label')->implode(', '),
+                    'remaining' => $sum['remaining'],
+                    'due' => $sum['late']->first()->dueDate($setting),
+                ]);
+            }
         }
 
         return view('admin.dashboard', [
-            'period'       => $period,
+            'setting' => $setting,
+            'feeRate' => FeeRate::current(),
             'studentCount' => $students->count(),
             'statusCounts' => $statusCounts,
-            'totals'       => $totals,
+            'totals' => $totals,
+            'arrears' => $arrears->sortBy(fn ($r) => $r['due']->timestamp)->take(5)->values(),
+            'announcements' => Announcement::latest()->get(),
         ]);
     }
 
     public function updateSchedule(Request $request): RedirectResponse
     {
         $data = $request->validate([
-            'name'         => ['required', 'string', 'max:255'],
-            'start_date'   => ['required', 'date'],
-            'due_date'     => ['required', 'date', 'after_or_equal:start_date'],
-            'standard_fee' => ['required', 'integer', 'min:0'],
-        ], [], [
-            'name' => 'nama periode', 'start_date' => 'tanggal mulai',
-            'due_date' => 'batas akhir', 'standard_fee' => 'nominal standar',
+            'start_day' => ['required', 'integer', 'between:1,31'],
+            'due_day' => ['required', 'integer', 'between:1,31', 'gte:start_day'],
+        ], [
+            'due_day.gte' => 'Batas akhir pembayaran tidak boleh lebih awal dari tanggal mulai.',
+        ], [
+            'start_day' => 'tanggal mulai pembayaran', 'due_day' => 'batas akhir pembayaran',
         ]);
 
         PaymentSetting::current()->update($data);
 
         return back()->with('success', 'Jadwal pembayaran berhasil disimpan.');
-    }
-
-    public function updateAnnouncement(Request $request): RedirectResponse
-    {
-        $data = $request->validate([
-            'announcement_title' => ['nullable', 'string', 'max:150'],
-            'announcement_body'  => ['nullable', 'string', 'max:5000'],
-        ], [], [
-            'announcement_title' => 'judul pengumuman', 'announcement_body' => 'isi pengumuman',
-        ]);
-
-        PaymentSetting::current()->update($data);
-
-        return back()->with('success', 'Pengumuman berhasil disimpan dan tampil di dashboard siswa.');
     }
 }

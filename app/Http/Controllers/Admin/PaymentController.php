@@ -3,87 +3,92 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\FeeAdjustmentRequest;
 use App\Http\Requests\StorePaymentRequest;
-use App\Models\FeeAdjustment;
+use App\Models\Bill;
+use App\Models\FeeRate;
 use App\Models\PaymentSetting;
 use App\Models\PaymentTransaction;
 use App\Models\User;
+use App\Services\BillingService;
+use App\Services\PaymentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Arr;
 
 class PaymentController extends Controller
 {
+    public function __construct(private BillingService $billing, private PaymentService $payments) {}
+
     public function index(Request $request)
     {
-        $period   = PaymentSetting::current();
+        $this->billing->syncBills();
+
+        $setting = PaymentSetting::current();
+        $rate = FeeRate::current();
         $students = User::students()->active()
             ->search($request->query('q'))
-            ->withPaymentTotals($period)
-            ->orderBy('nis')
+            ->with('bills.allocations.transaction')
+            ->orderBy('nisn')
             ->paginate(15)
             ->withQueryString();
 
-        return view('admin.payments', compact('period', 'students'));
+        return view('admin.payments', compact('setting', 'rate', 'students'));
     }
 
-    /** JSON used to fill the payment-management modal. */
-    public function show(User $student): JsonResponse
+    /** JSON used to fill the payment-management modal / drawer. Direct browser visits redirect to index. */
+    public function show(Request $request, User $student): JsonResponse|RedirectResponse
     {
-        $period = PaymentSetting::current();
+        $this->billing->syncBills($student);
+
+        if (! $request->expectsJson() && ! $request->ajax()) {
+            return redirect()->route('admin.payments.index', ['student' => $student->id]);
+        }
+
+        $setting = PaymentSetting::current();
+        $student->load('bills.allocations.transaction');
+
+        $summary = $student->paymentSummary($setting);
+        $bookable = $this->payments->filterBookable($student->bills)->pluck('id')->all();
+        $rate = FeeRate::current();
 
         return response()->json([
-            'student' => ['id' => $student->id, 'nis' => $student->nis, 'name' => $student->name],
-            'period'  => ['name' => $period->name, 'due_date' => $period->due_date->format('d/m/Y')],
-            'summary' => $student->paymentSummary($period),
-            'adjustments' => $student->feeAdjustments()
-                ->where('payment_setting_id', $period->id)->latest()->get()
-                ->map(fn ($a) => [
-                    'amount' => $a->amount,
-                    'reason' => $a->reason,
-                    'date'   => $a->created_at->format('d/m/Y'),
+            'student' => ['id' => $student->id, 'nisn' => $student->nisn, 'name' => $student->name],
+            'rate' => $rate ? ['academic_year' => $rate->academic_year, 'amount' => $rate->amount] : null,
+            'summary' => Arr::only($summary, ['total', 'paid', 'remaining', 'status']),
+            'bills' => $student->bills->sortBy(fn (Bill $b) => $b->period->timestamp)->values()
+                ->map(fn (Bill $b) => [
+                    'id' => $b->id,
+                    'label' => $b->label,
+                    'amount' => $b->amount,
+                    'due_date' => $b->dueDate($setting)->format('d/m/Y'),
+                    'status' => $b->statusFor($setting),
+                    'pending' => $b->hasPendingTransaction(),
+                    'selectable' => in_array($b->id, $bookable),
                 ]),
-            'transactions' => $student->transactions()
-                ->where('payment_setting_id', $period->id)->confirmed()
+            'transactions' => $student->transactions()->with('bills')
                 ->orderByDesc('paid_at')->orderByDesc('id')->get()
-                ->map(fn ($t) => [
+                ->map(fn (PaymentTransaction $t) => [
+                    'date' => $t->paid_at->format('d/m/Y'),
                     'amount' => $t->amount,
-                    'date'   => $t->paid_at->format('d/m/Y'),
-                    'note'   => $t->note,
+                    'method' => $t->method_label,
+                    'periods' => $t->period_labels,
+                    'status' => $t->status,
+                    'status_label' => $t->status_label,
+                    'status_color' => $t->status_color,
+                    'url' => route('admin.transactions.show', $t),
                 ]),
         ]);
     }
 
     public function storePayment(StorePaymentRequest $request, User $student): RedirectResponse
     {
-        // Every payment/installment is a new row; previous rows are never modified.
-        PaymentTransaction::create([
-            'user_id'            => $student->id,
-            'payment_setting_id' => PaymentSetting::current()->id,
-            'amount'             => $request->integer('amount'),
-            'paid_at'            => $request->date('paid_at'),
-            'note'               => $request->input('note'),
-            'status'             => PaymentTransaction::STATUS_CONFIRMED,
-            'confirmed_by'       => $request->user()->id,
-            'confirmed_at'       => now(),
-        ]);
+        $confirm = $request->input('action') === 'confirm';
 
-        return back()->with('success', "Pembayaran {$student->name} berhasil dicatat.");
-    }
+        $this->payments->create($student, $request->validated(), $request->user(), $confirm);
 
-    public function storeAdjustment(FeeAdjustmentRequest $request, User $student): RedirectResponse
-    {
-        $sign = $request->input('adjustment_type') === 'reduce' ? -1 : 1;
-
-        FeeAdjustment::create([
-            'user_id'            => $student->id,
-            'payment_setting_id' => PaymentSetting::current()->id,
-            'amount'             => $sign * $request->integer('adjustment_amount'),
-            'reason'             => $request->input('reason'),
-            'created_by'         => $request->user()->id,
-        ]);
-
-        return back()->with('success', "Penyesuaian biaya {$student->name} berhasil dicatat.");
+        return back()->with('success', $confirm
+            ? "Pembayaran {$student->name} berhasil dicatat dan dikonfirmasi."
+            : "Pembayaran {$student->name} disimpan, menunggu konfirmasi (menu Transaksi).");
     }
 }

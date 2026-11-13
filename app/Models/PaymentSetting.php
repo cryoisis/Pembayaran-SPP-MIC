@@ -3,82 +3,66 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Carbon;
 
-/** One row = one payment period (schedule, deadline, standard fee, announcement). */
+/**
+ * Monthly payment schedule (single row): each month's bill opens on `start_day`
+ * and is due on `due_day`. Also holds the shared payment-status constants.
+ */
 class PaymentSetting extends Model
 {
-    public const STATUS_UNPAID           = 'Belum bayar';
-    public const STATUS_PAID             = 'Sudah bayar';
-    public const STATUS_LATE             = 'Terlambat bayar';
-    public const STATUS_INSTALLMENT      = 'Mencicil';
-    public const STATUS_LATE_INSTALLMENT = 'Terlambat mencicil';
+    public const STATUS_PAID = 'Lunas';
 
-    public const DEFAULT_FEE = 1000000;
+    public const STATUS_UNPAID = 'Belum lunas';
 
-    protected $fillable = [
-        'name', 'start_date', 'due_date', 'standard_fee',
-        'announcement_title', 'announcement_body', 'is_active',
-    ];
+    public const STATUS_LATE = 'Terlambat';
+
+    public const DEFAULT_START_DAY = 1;
+
+    public const DEFAULT_DUE_DAY = 10;
+
+    protected $fillable = ['start_day', 'due_day'];
 
     protected function casts(): array
     {
-        return [
-            'start_date'   => 'date',
-            'due_date'     => 'date',
-            'standard_fee' => 'integer',
-            'is_active'    => 'boolean',
-        ];
+        return ['start_day' => 'integer', 'due_day' => 'integer'];
     }
 
-    public function transactions(): HasMany
-    {
-        return $this->hasMany(PaymentTransaction::class);
-    }
-
-    public function feeAdjustments(): HasMany
-    {
-        return $this->hasMany(FeeAdjustment::class);
-    }
-
-    /** The running period (created with defaults if none exists yet). */
+    /** The schedule in use (created with defaults if none exists yet). */
     public static function current(): self
     {
-        return static::where('is_active', true)->latest('id')->first()
-            ?? static::create([
-                'name'         => 'Pembayaran Periode Berjalan',
-                'start_date'   => today(),
-                'due_date'     => today()->addDays(30),
-                'standard_fee' => self::DEFAULT_FEE,
-                'is_active'    => true,
-            ]);
+        return static::query()->first() ?? static::create([
+            'start_day' => self::DEFAULT_START_DAY,
+            'due_day' => self::DEFAULT_DUE_DAY,
+        ]);
     }
 
-    public function isOverdue(): bool
+    /** Date a month's payment window opens. */
+    public function startDateFor(Carbon $period): Carbon
     {
-        return today()->gt($this->due_date);
+        return $this->dayOf($period, $this->start_day);
     }
 
-    public function statusFor(int $total, int $paid): string
+    /** Due date (deadline) of a month's bill. */
+    public function dueDateFor(Carbon $period): Carbon
     {
-        if ($paid >= $total) {
-            return self::STATUS_PAID;
-        }
-        if ($paid <= 0) {
-            return $this->isOverdue() ? self::STATUS_LATE : self::STATUS_UNPAID;
-        }
-        return $this->isOverdue() ? self::STATUS_LATE_INSTALLMENT : self::STATUS_INSTALLMENT;
+        return $this->dayOf($period, $this->due_day);
+    }
+
+    private function dayOf(Carbon $period, int $day): Carbon
+    {
+        $month = $period->copy()->startOfMonth();
+
+        return $month->copy()->day(min($day, $month->daysInMonth));
     }
 
     public static function statusColor(string $status): string
     {
         return match ($status) {
-            self::STATUS_PAID             => 'success',
-            self::STATUS_INSTALLMENT      => 'info',
-            self::STATUS_UNPAID           => 'secondary',
-            self::STATUS_LATE             => 'danger',
-            self::STATUS_LATE_INSTALLMENT => 'warning',
-            default                       => 'secondary',
+            self::STATUS_PAID => 'success',
+            self::STATUS_UNPAID => 'warning',
+            self::STATUS_LATE => 'danger',
+            default => 'secondary',
         };
     }
 }

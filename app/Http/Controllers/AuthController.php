@@ -6,11 +6,10 @@ use App\Http\Requests\LoginRequest;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\View\View;
 
 class AuthController extends Controller
 {
-    public function showLogin(): View
+    public function showLogin()
     {
         return view('auth.login');
     }
@@ -18,33 +17,29 @@ class AuthController extends Controller
     public function login(LoginRequest $request): RedirectResponse
     {
         $credentials = [
-            'nis' => $request->input('nis'),
+            'nisn' => $request->input('nisn'),
             'password' => $request->input('password'),
-            'is_active' => true,
+            'is_active' => true,               // deactivated students cannot log in
         ];
 
-        if (Auth::attempt($credentials, $request->boolean('remember'))) {
-            $request->session()->regenerate();
-
-            if (Auth::user()->isAdmin()) {
-                return redirect()->intended(route('admin.dashboard'));
-            }
-
-            return redirect()->intended(route('student.dashboard'));
+        if (! Auth::attempt($credentials)) {
+            return back()
+                ->withErrors(['nisn' => 'NISN/akun atau kata sandi salah, atau akun tidak aktif.'])
+                ->onlyInput('nisn');
         }
 
-        return back()->withInput($request->only('nis'))->withErrors([
-            'nis' => 'NIS/Akun atau password yang dimasukkan tidak sesuai atau akun nonaktif.',
-        ]);
+        $request->session()->regenerate();
+
+        // Role is derived from the account, not from the form.
+        return redirect()->route(Auth::user()->isAdmin() ? 'admin.dashboard' : 'student.dashboard');
     }
 
     public function logout(Request $request): RedirectResponse
     {
         Auth::logout();
-
         $request->session()->invalidate();
         $request->session()->regenerateToken();
 
-        return redirect()->route('login');
+        return redirect()->route('login')->with('success', 'Anda telah keluar.');
     }
 }

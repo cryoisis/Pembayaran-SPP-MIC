@@ -14,8 +14,8 @@ class StoreStudentRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'nis'      => ['required', 'string', 'max:30', 'unique:users,nis'],
-            'name'     => ['required', 'string', 'max:255'],
+            'nisn' => ['required', 'string', 'max:30', 'unique:users,nisn'],
+            'name' => ['required', 'string', 'max:255'],
             'password' => ['required', 'string', 'min:6'],
         ];
     }
@@ -23,13 +23,13 @@ class StoreStudentRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'nis.unique'   => 'NIS sudah terdaftar.',
-            'password.min' => 'Password minimal 6 karakter.',
+            'nisn.unique' => 'NISN sudah terdaftar.',
+            'password.min' => 'Kata sandi minimal 6 karakter.',
         ];
     }
 
     public function attributes(): array
     {
-        return ['nis' => 'NIS', 'name' => 'nama lengkap', 'password' => 'password'];
+        return ['nisn' => 'NISN', 'name' => 'nama lengkap', 'password' => 'kata sandi'];
     }
 }

@@ -1,22 +1,14 @@
-@if (session('success'))
-    <div class="alert alert-success alert-dismissible fade show" role="alert">
-        {{ session('success') }}
-        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-    </div>
-@endif
-@if (session('error'))
-    <div class="alert alert-danger alert-dismissible fade show" role="alert">
-        {{ session('error') }}
-        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-    </div>
-@endif
+@foreach (['success' => 'ok', 'error' => 'bad'] as $key => $tone)
+    @if (session($key))
+        <x-alert :tone="$tone" dismiss class="mb-4">{{ session($key) }}</x-alert>
+    @endif
+@endforeach
+
 @if ($errors->any() && ! request()->routeIs('login*'))
-    <div class="alert alert-danger" role="alert">
+    <x-alert tone="bad" class="mb-4">
         <strong>Terjadi kesalahan:</strong>
-        <ul class="mb-0">
-            @foreach ($errors->all() as $error)
-                <li>{{ $error }}</li>
-            @endforeach
+        <ul class="mt-1 list-inside list-disc space-y-0.5">
+            @foreach ($errors->all() as $error)<li>{{ $error }}</li>@endforeach
         </ul>
-    </div>
+    </x-alert>
 @endif
